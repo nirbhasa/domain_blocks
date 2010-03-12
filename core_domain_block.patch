@@ -1,0 +1,34 @@
+--- modules/block/block.module	2010-03-04 01:59:06.000000000 +0000
++++ modules/block/block-new.module	2010-01-18 02:24:21.000000000 +0000
+@@ -430,7 +430,30 @@ function block_list($region) {
+ 
+   if (!count($blocks)) {
+     $rids = array_keys($user->roles);
+-    $result = db_query(db_rewrite_sql("SELECT DISTINCT b.* FROM {blocks} b LEFT JOIN {blocks_roles} r ON b.module = r.module AND b.delta = r.delta WHERE b.theme = '%s' AND b.status = 1 AND (r.rid IN (". db_placeholders($rids) .") OR r.rid IS NULL) ORDER BY b.region, b.weight, b.module", 'b', 'bid'), array_merge(array($theme_key), $rids));
++    
++    // text replaced by patch
++    /*$result = db_query(db_rewrite_sql("SELECT DISTINCT b.* FROM {blocks} b LEFT JOIN {blocks_roles} r ON b.module = r.module AND b.delta = r.delta WHERE b.theme = '%s' AND b.status = 1 AND (r.rid IN (". db_placeholders($rids) .") OR r.rid IS NULL) ORDER BY b.region, b.weight, b.module", 'b', 'bid'), array_merge(array($theme_key), $rids));*/
++    
++     // domain blocks - patch - Nirbhasa
++    if(module_exists('domain_blocks') )
++    {
++        global $_domain;
++          if($_domain['domain_id']>0)
++          {      
++                 $result = db_query("SELECT DISTINCT d.module,d.delta, d.domain_id, d.region, d.weight, b.visibility, b.pages, b.custom, b.title FROM {domain_blocks} d JOIN {blocks} b ON b.module = d.module AND b.delta = d.delta WHERE d.domain_id = %d AND (d.region != '%s' AND d.region != '%s') ORDER BY d.region, d.weight, d.module", $_domain['domain_id'],'',BLOCK_REGION_NONE);
++          }
++          else
++          {
++                $result = db_query(db_rewrite_sql("SELECT DISTINCT b.* FROM {blocks} b LEFT JOIN {blocks_roles} r ON b.module = r.module AND b.delta = r.delta WHERE b.theme = '%s' AND b.status = 1 AND (r.rid IN (". db_placeholders($rids) .") OR r.rid IS NULL) ORDER BY b.region, b.weight, b.module", 'b', 'bid'), array_merge(array($theme_key), $rids));
++          }     
++                                
++    }
++    else
++    { 
++        $result = db_query(db_rewrite_sql("SELECT DISTINCT b.* FROM {blocks} b LEFT JOIN {blocks_roles} r ON b.module = r.module AND b.delta = r.delta WHERE b.theme = '%s' AND b.status = 1 AND (r.rid IN (". db_placeholders($rids) .") OR r.rid IS NULL) ORDER BY b.region, b.weight, b.module", 'b', 'bid'), array_merge(array($theme_key), $rids));
++    }   
++    // end of patch
++
+     while ($block = db_fetch_object($result)) {
+       if (!isset($blocks[$block->region])) {
+         $blocks[$block->region] = array();

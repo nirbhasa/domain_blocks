@@ -1,0 +1,523 @@
+<?php
+// $Id: domain_blocks.module,v 1.1.2.2 2009/01/06 06:23:37 nonsie Exp $
+
+/**
+ * @file
+ * Provides domain specific visibility settings for blocks based on user domain access settings
+ * Domain Blocks does not define any permissions of its own yet it requires user to have
+ * set domain access permission in order to define any domain based visibility settings.
+ */
+ 
+/**
+ * Denotes that a block is not enabled in any region and should not
+ * be shown.
+ */
+define('BLOCK_REGION_NONE', -1); 
+
+/**
+ * Implementation of hook_help().
+ * Display help and module information
+ * @param path which path of the site we're displaying help
+ * @param arg array that holds the current path as would be returned from arg() function
+ * @return help text for the path
+ */
+  
+function domain_blocks_help($path, $arg) {
+  $output = '';
+  switch ($path) {
+    case "admin/help#domain_blocks":
+      $output = '<p>'.  t("Provides domain specific visibility settings for blocks") .'</p>';
+      break;
+  }
+  return $output;
+}
+
+/**
+ * Implements hook_menu()
+ */
+function domain_blocks_menu() {
+
+$items = array();
+  $items['admin/build/domain/blocks/%domain'] = array(
+    'title' => 'Domain blocks settings',
+    'type' => MENU_CALLBACK,
+    'access callback' => 'domain_blocks_access',
+    'access arguments' => array(4),
+    'page callback' => 'domain_blocks_page',
+    'page arguments' => array(4),
+    'file' => 'domain_blocks.admin.inc',
+  );
+
+    $items['admin/build/domain/blocks/add'] = array(
+    'title' => 'Add domain block',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('block_add_block_form'),
+    'access callback' => 'domain_blocks_access',
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'block.admin.inc',
+    'file path' => drupal_get_path('module', 'block'),
+  );
+  
+    $items['admin/build/domain/blocks/configure'] = array(
+    'title' => 'Configure domain block',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('block_admin_configure'),
+    'access callback' => 'domain_blocks_access',
+    'type' => MENU_CALLBACK,
+    'file' => 'block.admin.inc',
+    'file path' => drupal_get_path('module', 'block'),
+  );
+  $items['admin/build/domain/blocks/delete'] = array(
+    'title' => 'Delete domain block',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('block_box_delete'),
+    'access callback' => 'domain_blocks_access',
+    'type' => MENU_CALLBACK,
+    'file' => 'block.admin.inc',
+    'file path' => drupal_get_path('module', 'block'),
+  );
+  return $items;
+}
+
+function domain_blocks_perm() {
+  $perms = array('administer domain blocks');
+  return $perms;
+}
+
+function domain_blocks_access() {
+  global $user, $_domain;
+  $domain_user = domain_get_user_domains($user);
+  $user_domains = array();
+
+  if (!empty($domain_user)) {
+          foreach ($domain_user as $key => $value) {
+            if (abs($value) > 0) {
+              $user_domains[] = $value;
+            }
+  }}
+
+  return (user_access('administer domains') || (in_array( $_domain['domain_id'], $user_domains )
+                  && user_access('administer domain blocks')  )  );
+}
+
+function _domain_blocks_rehash($domain) {
+
+    $blocks = _block_rehash();
+    $domain_blocks = array();
+    
+    foreach($blocks as $block)
+    {
+    	//drupal_set_message('Check:'.$block['module'].'_'.$block['delta'].':status:'.$block['status']);
+    	// If block is assigned to all domains, check if domain_blocks record has been created for this domain. This enables blocks assigned to all domains to be assigned to different regions for different domains 
+    	$result1 = db_query("SELECT realm, domain_id from {domain_blocks} WHERE module = '%s' AND delta = '%s' ", $block['module'], $block['delta']);
+    	 $domain_site_set_id = 0;
+    	while( $domainall = db_fetch_array($result1) ){ 
+    	    if(($domainall['domain_id'] == $domain['domain_id']) || $domainall['realm']=='domain_id') {
+    	          $domain_site_set_id =1;
+    		      //drupal_set_message('Domain '. $domain['domain_id']. ': record exists:'.$block['module'].'_' $block['delta'].':status:'.$block['status']); 
+    	    } 		
+    	}	
+    		
+    	if($domain_site_set_id == 0) {	
+    		if($block['status']==1){		     
+    		      // Block id not declared for this block 
+    		     //drupal_set_message('Not set:'.$block['module'].'_'.$block['delta'].':status:'.$block['status']);  		
+    		     db_query("INSERT INTO {domain_blocks}(module, delta, realm, domain_id, weight) VALUES('%s', '%s', '%s', %d, %d)", $block['module'], $block['delta'], 'domain_site', $domain['domain_id'], 0);
+    		}	   		
+    	}  	
+    	$result = db_query("SELECT * from {domain_blocks} WHERE module = '%s' AND delta = '%s' AND domain_id = %d ", $block['module'], $block['delta'], $domain['domain_id']);	
+    	   	
+    	while( $block_domain_id = db_fetch_array($result) ){  		
+    		if($block_domain_id['realm']=='domain_id' || 
+    		    ($block_domain_id['realm']=='domain_site' && $block['status'] == 1 ) ) {    
+    		//drupal_set_message('set:'.$block_domain_id['module'].'_'.$block_domain_id['delta'].':site realm:'.$block_domain_id['realm']);
+    			// Add domain specific regions and weights  	
+    			$block['region'] = $block_domain_id['region'];
+    			$block['weight'] = $block_domain_id['weight'];   			
+    			$domain_blocks[] = $block;
+    		}	
+    		
+    	}		    
+    }
+    usort($domain_blocks, '_block_compare');
+    return $domain_blocks;
+}    
+
+
+
+function domain_blocks_domainlinks($domain) {
+  static $extra;
+  if (!isset($extra)) {
+    $extra = domain_conf_api();
+  }
+  if ($domain['domain_id'] > 0 || !empty($extra)) {
+    $links[] = array(
+      'title' => t('blocks'),
+      'path' => 'admin/build/domain/blocks/'. $domain['domain_id']
+    );
+    return $links;
+  }
+  return FALSE;
+}
+
+/**
+ * Save domain block data
+ * @param string $delta
+ * @param string $delta
+ * @param array $domain_arr
+ */
+function domain_blocks_save($module, $delta, $domain_arr) {
+  $domain_blocks_saved = _domain_blocks_with_realm_load($module, $delta);
+  // Unset blocks relationship with any domains
+  if (empty($domain_blocks_saved)) {
+    if (!empty($domain_arr)) {
+      $realm = 'domain_id';
+      $region = '';
+      foreach ($domain_arr as $single_domain_id => $enabled) {
+        db_query("INSERT INTO {domain_blocks}(module, delta, realm, domain_id, region, weight) VALUES('%s', '%s', '%s', %d, '%s', %d)", $module, $delta, $realm, $single_domain_id, -1, 0);
+      }
+    }
+    /*else {
+      // Block is visible on all domains (domain_site grant)
+      $realm = 'domain_site';
+      db_query("INSERT INTO {domain_blocks}(module, delta, realm, domain_id, region, weight) VALUES('%s', '%s', '%s', %d, '%s', %d)", $module, $delta, $realm, 0, -1, 0);
+    }*/
+  }
+  else {
+    // Visible on all domains + adding individual domain based perms
+    if (isset($domain_blocks_saved['domain_site']) && !empty($domain_arr)) {
+      // remove domain_site grant records - block visibility is defined by individual domains
+      $realm = 'domain_site';
+      //db_query("DELETE FROM {domain_blocks} WHERE module = '%s' AND delta = '%s' AND realm = '%s' AND domain_id IN ('%s')", $module, $delta, $realm, 0);
+      
+      drupal_set_message("Deleting all domain_site records");
+      db_query("DELETE FROM {domain_blocks} WHERE module = '%s' AND delta = '%s' AND realm = '%s' ", $module, $delta, $realm);
+      
+    }
+    if (isset($domain_blocks_saved['domain_id'])) {
+      // Loop over domain ids already saved
+      $domain_count_saved = count($domain_blocks_saved['domain_id']);
+      $existing = $domain_blocks_saved['domain_id'];
+      if (!empty($domain_arr)) {
+        foreach ($domain_blocks_saved['domain_id'] as $key => $val) {
+          if (array_key_exists ($key, $domain_arr)) {
+            unset($existing[$key]);
+            unset($domain_arr[$key]);
+          }
+        }
+      }
+      
+      // Remove domain grants no longer used
+      $num_to_be_removed = count($existing);
+      $domain_count_saved = $domain_count_saved - $num_to_be_removed;
+      if ($num_to_be_removed > 0) {
+        $domains_to_be_removed = implode(', ', array_keys($existing));
+        $realm = 'domain_id';
+        db_query("DELETE FROM {domain_blocks} WHERE module = '%s' AND delta = '%s' AND realm = '%s' AND domain_id IN ('%s')", $module, $delta, $realm, $domains_to_be_removed);
+       
+      }
+      if (!empty($domain_arr)) {
+        $realm = 'domain_id';
+        foreach ($domain_arr as $single_domain_id => $enabled) {
+          db_query("INSERT INTO {domain_blocks}(module, delta, realm, domain_id, region, weight) VALUES('%s', '%s', '%s', %d,'%s',%d)", $module, $delta, $realm, $single_domain_id, $domain_blocks_saved['region']['domain_id'][$single_domain_id], $domain_blocks_saved['region']['domain_id'][$weight]);
+        }
+      }
+      // No domain specific block visibility settings, must be a grant all
+      if ($domain_count_saved == 0) {
+      	
+      	//Dont insert record now - insert during domain_blocks_rehash
+      	
+        //$realm = 'domain_site';
+        //db_query("INSERT INTO {domain_blocks}(module, delta, realm, domain_id) VALUES('%s', '%s', '%s', %d)", $module, $delta, $realm, 0);
+      }
+    }
+    else {
+      // No previous domain based grants, let's set those up now
+      if (!empty($domain_arr)) {
+        $realm = 'domain_id';
+          foreach ($domain_arr as $single_domain_id => $enabled) {
+          	
+          	if($module == 'admin_block' || $module == 'book' )
+          	{
+          	    $region = 'left';	
+          	}	
+          	else
+          	{
+          		$region = '';
+          	}
+          		
+            db_query("INSERT INTO {domain_blocks}(module, delta, realm, domain_id, region, weight) VALUES('%s', '%s', '%s', %d, '%s', %d)", $module, $delta, $realm, $single_domain_id, $region, 0);
+          }
+      }
+    }
+  }
+}
+
+/**
+ * Implementation of block form_alter().
+ */
+function domain_blocks_form_alter(&$form, $form_state, $form_id) {
+
+  if (($form_id == 'block_admin_configure' || $form_id == 'block_box_form' || $form_id == 'block_add_block_form')) {
+    // If the user is a site admin, show the form, otherwise pass it silently.
+    if (user_access('set domain access')) {
+      $module = $form['module']['#value'];
+      $delta = $form['delta']['#value'];
+      $form['domain_vis_settings'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Domain specific visibility settings'),
+        '#collapsible' => TRUE,
+        '#collapsed' => FALSE,
+        '#weight' => 0,
+      );
+      $block_domains = _domain_blocks_load($module, $delta, 'domain_id');
+      $options = array();
+      foreach (domain_domains() as $data) {
+        // Cannot pass zero in checkboxes.
+        ($data['domain_id'] == 0) ? $key = -1 : $key = $data['domain_id'];
+        // The domain must be valid.
+        if ($data['valid'] || user_access('administer domains')) {
+          $options[$key] = $data['sitename'];
+        }
+      }
+      $form['domain_vis_settings']['domain_blocks'] = array(
+        '#type' => 'checkboxes',
+        '#title' => t('Display on'),
+        '#options' => $options,
+        '#required' => FALSE,
+        '#description' => t('Limit block display to these affiliates. This block is visible on all domains by default using this theme.'),
+        '#default_value' => $block_domains,
+      );
+      
+    }
+    
+    /* Domain managers don't need role and custom settings */ 
+    if(!user_access('administer blocks'))
+    {
+    	$form['user_vis_settings'] = array();
+  	$form['role_vis_settings'] = array();
+    	
+    	
+    //Nirbhasa, to do: Trying to fix error where no defaulr row array is passed for roles, will do later	
+      /*$default_role_options = array();
+      $result = db_query("SELECT rid FROM {blocks_roles} WHERE module = '%s' AND delta = '%s'", $module, $delta);
+      while ($role = db_fetch_object($result)) {
+            $default_role_options[] = $role->rid;
+       } 
+    	$form['roles'] = $default_role_options;*/
+	
+    }
+    
+    $form['#submit'][] = 'domain_blocks_form_submit';	
+  }
+  
+  
+  /* Redirect configure and delete links for permissions purposes, change the block display form to freeze out sitewide assigned blocks */
+  if ($form_id == 'block_admin_display_form' ) {
+
+  	 global $theme_key, $_domain;
+
+     $block_regions = system_region_list($theme_key) + array(BLOCK_REGION_NONE => '<'. t('none') .'>');
+  	 if($_domain['domain_id'] > 0) {
+  	 	
+  	 	
+  	 	$form['#action'] = url('admin/build/domain/blocks/').$_domain['domain_id'];
+  	 
+      	$blocks = _domain_blocks_rehash($_domain);
+      	$weight_delta = round(count($blocks) / 2);
+      	foreach ($blocks as $i => $block) {
+        	$key = $block['module'] .'_'. $block['delta'];
+       		$block_realm = db_result(db_query("SELECT realm FROM {domain_blocks} WHERE module = '%s' AND delta = %d", $block['module'], $block['delta']));
+    	
+        	if( !user_access('administer blocks') && $block['module']!='block' ) {	
+        		$form[$key]['configure'] = array();
+      			$form[$key]['delete'] = array();
+        	}
+        	else {	
+        		$form[$key]['configure'] = array('#value' => l(t('configure'), 'admin/build/domain/blocks/configure/'. $block['module'] .'/'. $block['delta']));
+    			if ($block['module'] == 'block') {
+      	       		$form[$key]['delete'] = array('#value' => l(t('delete'), 'admin/build/domain/blocks/delete/'. $block['delta']));
+    			} 
+        	}	     	
+        	if(!$block['region'] /*|| $block['region']<=0*/) {
+        		$block['region'] = BLOCK_REGION_NONE;
+        	}	 
+         	//drupal_set_message("here:".print_r($block) );
+        	$form[$key]['weight'] = array(
+                    '#type' => 'weight',
+                    '#default_value' => $block['weight'],
+                    '#delta' => $weight_delta,
+                 );
+         	$form[$key]['region'] = array(
+                              '#type' => 'select',
+                              '#default_value' => $block['region'],
+                              '#options' => $block_regions,
+          	); 	
+        }  	
+     }
+     
+     
+     //drupal_goto('admin/build/domain/blocks/'.$_domain['domain_id']);
+     if($_domain['domain_id'] > 0)
+     {
+         $form['#submit'] = array();  //completely bypass {blocks} table && main form
+     }
+     $form['#submit'][] = 'domain_blocks_display_submit'; 
+  } 
+  
+  
+  if ($form_id == 'block_box_delete' ) {
+  	
+  	$form['#submit'] = array();
+  	$form['#submit'][] = 'domain_blocks_delete_submit'; 
+  	
+  }	
+  
+  
+}     
+
+/**
+ * Forms api callback. Submit functions
+ */
+function domain_blocks_form_submit($form, &$form_state) {
+  global $_domain;	
+	
+  $values = $form_state['values'];
+  // Delta may be zero for other modules than block.
+  if (!$values['delta'] && $values['module'] == 'block') {
+    $values['delta'] = db_result(db_query("SELECT MAX(bid) FROM {boxes}"));
+  }
+  $enabled_domains = array();
+  if (!empty($values['domain_blocks'])) {
+    foreach ($values['domain_blocks'] as $single_domain_id => $domain_enabled) {
+      if ($domain_enabled != 0) {
+        if ($single_domain_id == -1) {
+          $single_domain_id = 0;
+        }
+        $enabled_domains[$single_domain_id] = 1;
+      }
+    }
+  } 
+  else if(!user_access('set domain access')) { 
+  	 //If user did not have access to the form, assign block to the current domain
+  	 $enabled_domains[$_domain['domain_id']] = 1;
+  }	 
+  	
+  domain_blocks_save($values['module'], $values['delta'], $enabled_domains);
+  
+  if($_domain['domain_id']>0) {
+  	$form_state['redirect'] = 'admin/build/domain/blocks/'.$_domain['domain_id'];
+  }    
+}
+
+function domain_blocks_display_submit($form, &$form_state) {
+	    global $_domain;
+	     
+	
+  		foreach ($form_state['values'] as $block) {
+    		$block['status'] = $block['region'] != BLOCK_REGION_NONE;   		
+    		$block['region'] = $block['status'] ? $block['region'] : '';
+    		db_query("UPDATE {domain_blocks} SET weight = %d, region = '%s' WHERE module = '%s' AND delta = '%s' AND domain_id = %d", $block['weight'], $block['region'], $block['module'], $block['delta'], $_domain['domain_id']);
+  		}
+  		
+  		if($_domain['domain_id'] > 0) {
+  	$form_state['redirect'] = 'admin/build/domain/blocks/'.$_domain['domain_id'];
+        }
+  		
+  		
+  		drupal_set_message(t('The domain block settings have been updated.'));
+  		cache_clear_all();
+}
+
+
+/**
+ * Deletion of custom blocks.
+ */
+function domain_blocks_delete_submit($form, &$form_state) {
+  global $_domain;	
+  db_query('DELETE FROM {boxes} WHERE bid = %d', $form_state['values']['bid']);
+  db_query("DELETE FROM {blocks} WHERE module = 'block' AND delta = '%s'", $form_state['values']['bid']);
+  db_query("DELETE FROM {domain_blocks} WHERE module = 'block' AND delta = '%s'", $form_state['values']['bid']);
+  drupal_set_message(t('The block %name has been removed.', array('%name' => $form_state['values']['info'])));
+  cache_clear_all();
+  $form_state['redirect'] = 'admin/build/domain/blocks/'.$_domain['domain_id'];
+  return;
+}
+
+
+
+/**
+ * Implementation of hook_db_rewrite_sql().
+ */
+function domain_blocks_db_rewrite_sql($query, $primary_table, $primary_key, $args) {
+  global $_domain;
+
+  if ($primary_table == 'b' && $primary_key == 'bid') {
+    $result['join'] = " INNER JOIN {domain_blocks} db ON db.module = b.module ";
+    $result['where'] = " db.delta = b.delta ";
+    $result['where'] .= " AND ((db.realm = 'domain_site' AND db.domain_id = 0) OR (db.realm = 'domain_id' AND db.domain_id = ". $_domain['domain_id'] ."))";
+    return $result;
+  }
+}
+
+/**
+ * Look up domain blocks based on block module and delta
+ *
+ * @param string $module
+ * @param string $delta
+ * @return array
+ */
+function _domain_blocks_domain_lookup($module = NULL, $delta = NULL) {
+  $result = array();
+  if (!is_null($module) && !is_null($delta)) {
+    $result = db_fetch_array(db_query("SELECT domain_id from {domain_blocks} WHERE module = '%s' AND delta = '%s'", $module, $delta));
+  }
+  return $result;
+}
+
+function _domain_blocks_load($module, $delta, $realm = NULL) {
+  $block = array();
+  if (!empty($realm)) {
+    $result = db_query("SELECT domain_id FROM {domain_blocks} WHERE module = '%s' AND delta = '%s' AND realm = '%s'", $module, $delta, $realm);
+  }
+  else {
+    $result = db_query("SELECT domain_id FROM {domain_blocks} WHERE module = '%s' AND delta = '%s'", $module, $delta);
+  }
+  while ($row = db_fetch_array($result)) {
+    if ($row['domain_id'] == 0) {
+      $row['domain_id'] = -1;
+    }
+    $block[] = $row['domain_id'];
+  }
+  return $block;
+}
+
+function _domain_blocks_with_realm_load($module, $delta) {
+  $block = array();
+  $result = db_query("SELECT domain_id, realm, region, weight FROM {domain_blocks} WHERE module = '%s' AND delta = '%s'", $module, $delta);
+  while ($row = db_fetch_array($result)) {
+    $block[$row['realm']][$row['domain_id']] = 1;
+    $block['region'][$row['realm']][$row['domain_id']] = $row['region'];
+    $block['weight'][$row['realm']][$row['domain_id']] = $row['weight'];
+  }
+  return $block;
+}
+
+/**
+ * Implementation of hook_domainupdate().
+ */
+function domain_blocks_domainupdate($op, $domain, $edit) {
+ switch ($op) {
+    case 'delete':
+      // remove records
+      _domain_blocks_delete($domain);
+    case 'update':
+    case 'insert':
+    default:
+    break;
+ }
+}
+
+function _domain_blocks_delete($domain) {
+  db_query("DELETE FROM {domain_blocks} WHERE domain_id = %d AND realm = 'domain_id'", $domain['domain_id']);
+}
